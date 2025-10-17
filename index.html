@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>班级班费填写与查询系统</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft YaHei",sans-serif; }
+        body { max-width:600px; margin:20px auto; padding:0 15px; background:#f5f7fa; }
+        .tab { display:flex; margin-bottom:20px; }
+        .tab-btn { flex:1; text-align:center; padding:12px; background:white; border:none; font-size:16px; font-weight:bold; cursor:pointer; border-radius:8px 8px 0 0; margin-right:5px; }
+        .tab-btn.active { background:#3498db; color:white; }
+        .tab-content { display:none; background:white; padding:20px; border-radius:0 8px 8px 8px; box-shadow:0 2px 5px rgba(0,0,0,0.1); }
+        .tab-content.active { display:block; }
+        .form-group { margin-bottom:25px; }
+        label { display:block; margin-bottom:8px; font-weight:bold; color:#333; }
+        select, input, textarea { width:100%; padding:12px; border:1px solid #ddd; border-radius:6px; font-size:16px; }
+        .img-preview { width:100%; height:180px; border:2px dashed #ddd; margin-top:10px; display:flex; align-items:center; justify-content:center; color:#999; font-size:14px; overflow:hidden; }
+        .img-preview img { width:100%; height:100%; object-fit:contain; }
+        .submit-btn { width:100%; padding:15px; background:#2ecc71; color:white; border:none; border-radius:6px; font-size:16px; font-weight:bold; cursor:pointer; }
+        .balance { text-align:center; margin:20px 0; padding:15px; background:#f8f9fa; border-radius:8px; }
+        .balance h2 { color:#e74c3c; margin-top:10px; }
+        .record-item { padding:15px; border-bottom:1px solid #eee; margin-bottom:10px; border-radius:6px; background:#f9f9f9; }
+        .record-type { display:inline-block; padding:3px 8px; border-radius:4px; font-size:14px; font-weight:bold; }
+        .type-income { background:#e8f5e9; color:#2ecc71; }
+        .type-expense { background:#ffebee; color:#e74c3c; }
+        .cert-img { width:100%; margin-top:10px; border-radius:4px; cursor:pointer; }
+        .loading { text-align:center; padding:30px; color:#7f8c8d; }
+        /* 凭证弹窗 */
+        .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:999; justify-content:center; align-items:center; }
+        .modal img { max-width:90%; max-height:80vh; }
+        .close { position:absolute; top:20px; right:20px; color:white; font-size:28px; cursor:pointer; }
+    </style>
+</head>
+<body>
+    <!-- 切换标签：填写表单 / 查看记录 -->
+    <div class="tab">
+        <button class="tab-btn active" onclick="switchTab('form-tab')">填写班费记录</button>
+        <button class="tab-btn" onclick="switchTab('records-tab')">查看所有记录</button>
+    </div>
+
+    <!-- 填写表单（带截图上传） -->
+    <div id="form-tab" class="tab-content active">
+        <h3>添加班费记录</h3>
+        <div class="form-group">
+            <label for="fee-type">收支类型</label>
+            <select id="fee-type" required>
+                <option value="">请选择</option>
+                <option value="income">收入</option>
+                <option value="expense">支出</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="fee-amount">金额（元）</label>
+            <input type="number" id="fee-amount" step="0.01" min="0.01" required placeholder="请输入正数，例：20、128.5">
+        </div>
+        <div class="form-group">
+            <label for="fee-purpose">用途说明</label>
+            <textarea id="fee-purpose" rows="2" required placeholder="例：收9月班费/班会买零食"></textarea>
+        </div>
+        <div class="form-group">
+            <label for="fee-cert">凭证截图（必传）</label>
+            <input type="file" id="fee-cert" accept="image/jpg,image/png" required>
+            <div class="img-preview" id="img-preview">点击上传图片预览</div>
+        </div>
+        <button class="submit-btn" id="submit-btn">提交记录</button>
+    </div>
+
+    <!-- 查看记录（带凭证查看） -->
+    <div id="records-tab" class="tab-content">
+        <div class="balance">
+            <h3>当前班费余额</h3>
+            <h2 id="total-balance">加载中...</h2>
+        </div>
+        <h3>收支历史记录</h3>
+        <div id="records-list" class="loading">正在加载记录...</div>
+    </div>
+
+    <!-- 凭证弹窗 -->
+    <div class="modal" id="cert-modal">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <img id="modal-img" src="" alt="凭证截图">
+    </div>
+
+    <!-- 引入LeanCloud SDK（不用改） -->
+    <script src="https://cdn.jsdelivr.net/npm/leancloud-storage@4.17.0/dist/av-min.js"></script>
+    <script>
+        // ########## 关键：替换成你的LeanCloud信息 ##########
+        const APP_ID = "GgJCh7rzD4cTUKyZrzsNbx5G-gzGzoHsz";
+        const APP_KEY = "a7NTewIYVSF6Cp4CE92woPoL";
+        const SERVER_URL = "你zUJZf8LrnI7OuTTRkxDSB5gu";
+
+        // 初始化LeanCloud（不用改）
+        AV.init({ appId: APP_ID, appKey: APP_KEY, serverURL: SERVER_URL });
+        const FeeRecords = AV.Object.extend('FeeRecords'); // 和LeanCloud的Class名对应
+        const modal = document.getElementById('cert-modal');
+        const modalImg = document.getElementById('modal-img');
+
+        // 1. 图片上传预览（不用改）
+        document.getElementById('fee-cert').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    document.getElementById('img-preview').innerHTML = `<img src="${event.target.result}" alt="预览">`;
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // 2. 提交记录到LeanCloud（不用改）
+        document.getElementById('submit-btn').addEventListener('click', async function() {
+            const type = document.getElementById('fee-type').value;
+            const amount = parseFloat(document.getElementById('fee-amount').value);
+            const purpose = document.getElementById('fee-purpose').value.trim();
+            const certFile = document.getElementById('fee-cert').files[0];
+
+            // 基础校验
+            if (!type || isNaN(amount) || !purpose || !certFile) {
+                alert('请完善所有信息并上传凭证！');
+                return;
+            }
+
+            // 禁用按钮防重复提交
+            this.disabled = true;
+            this.textContent = "提交中...";
+
+            try {
+                // 第一步：上传凭证图片到LeanCloud
+                const avFile = new AV.File(certFile.name, certFile);
+                await avFile.save();
+                const certUrl = avFile.get('url'); // 获取图片链接
+
+                // 第二步：保存班费记录到数据库
+                const feeRecord = new FeeRecords();
+                feeRecord.set('type', type); // 收支类型（income/expense）
+                feeRecord.set('amount', amount); // 金额
+                feeRecord.set('purpose', purpose); // 用途
+                feeRecord.set('certUrl', certUrl); // 图片链接
+                feeRecord.set('time', new Date().toLocaleString('zh-CN')); // 提交时间
+                await feeRecord.save();
+
+                // 提交成功
+                alert('记录提交成功！');
+                // 重置表单
+                document.getElementById('fee-type').value = '';
+                document.getElementById('fee-amount').value = '';
+                document.getElementById('fee-purpose').value = '';
+                document.getElementById('fee-cert').value = '';
+                document.getElementById('img-preview').innerHTML = '点击上传图片预览';
+                // 切换到记录页
+                switchTab('records-tab');
+                // 重新加载记录
+                loadRecords();
+            } catch (error) {
+                alert('提交失败：' + error.message);
+            } finally {
+                // 恢复按钮
+                this.disabled = false;
+                this.textContent = "提交记录";
+            }
+        });
+
+        // 3. 加载所有记录+计算余额（不用改）
+        async function loadRecords() {
+            try {
+                // 从LeanCloud获取所有记录（按时间倒序）
+                const query = new AV.Query('FeeRecords');
+                query.descending('createdAt'); // 最新的在前面
+                const records = await query.find();
+
+                if (records.length === 0) {
+                    document.getElementById('records-list').innerHTML = '暂无记录，先添加第一条吧！';
+                    document.getElementById('total-balance').textContent = '0.00 元';
+                    return;
+                }
+
+                // 计算余额+生成记录列表
+                let totalBalance = 0;
+                let recordsHtml = '';
+                records.forEach(record => {
+                    const id = record.id;
+                    const type = record.get('type');
+                    const amount = record.get('amount').toFixed(2);
+                    const purpose = record.get('purpose');
+                    const certUrl = record.get('certUrl');
+                    const time = record.get('time');
+
+                    // 算余额（收入加，支出减）
+                    if (type === 'income') totalBalance += parseFloat(amount);
+                    if (type === 'expense') totalBalance -= parseFloat(amount);
+
+                    // 生成记录HTML（区分收入/支出颜色）
+                    recordsHtml += `
+                        <div class="record-item">
+                            <div>
+                                <span class="record-type ${type === 'income' ? 'type-income' : 'type-expense'}">
+                                    ${type === 'income' ? '收入' : '支出'}
+                                </span>
+                                <span style="margin-left:10px;">${time}</span>
+                            </div>
+                            <div style="margin:10px 0;">金额：${amount} 元</div>
+                            <div>用途：${purpose}</div>
+                            <img class="cert-img" src="${certUrl}" alt="凭证" onclick="openModal('${certUrl}')">
+                        </div>
+                    `;
+                });
+
+                // 更新页面
+                document.getElementById('records-list').innerHTML = recordsHtml;
+                document.getElementById('total-balance').textContent = totalBalance.toFixed(2) + ' 元';
+            } catch (error) {
+                document.getElementById('records-list').textContent = '加载失败，刷新重试';
+                document.getElementById('total-balance').textContent = '加载失败';
+            }
+        }
+
+        // 4. 切换标签（不用改）
+        function switchTab(tabId) {
+            // 切换按钮样式
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`.tab-btn[onclick="switchTab('${tabId}')"]`).classList.add('active');
+            // 切换内容
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.getElementById(tabId).classList.add('active');
+            // 切换到记录页时加载数据
+            if (tabId === 'records-tab') loadRecords();
+        }
+
+        // 5. 打开/关闭凭证弹窗（不用改）
+        function openModal(imgUrl) {
+            modalImg.src = imgUrl;
+            modal.style.display = 'flex';
+        }
+        function closeModal() {
+            modal.style.display = 'none';
+        }
+
+        // 页面加载时默认加载记录
+        window.onload = function() {
+            if (document.getElementById('records-tab').classList.contains('active')) {
+                loadRecords();
+            }
+        };
+    </script>
+</body>
+</html>
